@@ -336,8 +336,35 @@ function renderOutline(snapshot) {
     olTree.innerHTML = '<div class="ol-empty">此文档没有标题</div>';
     return;
   }
-  olTree.innerHTML = snapshot.map(h =>
-    `<button class="ol-item ol-l${h.level}" style="padding-left:${10 + (h.level - 1) * 13}px" data-target="${esc(h.id)}" title="${esc(h.text)}">${esc(h.text)}</button>`).join('');
+  olTree.innerHTML = snapshot.map((h, i) =>
+    `<button class="ol-item ol-l${h.level}" data-i="${i}" style="padding-left:${10 + (h.level - 1) * 13}px" data-target="${esc(h.id)}" title="${esc(h.text)}">${esc(h.text)}</button>`).join('');
+}
+
+/* 建立「标题 → 源码偏移」映射（按文档顺序单调向后匹配） */
+function computeSourceOffsets(src, snapshot) {
+  const lines = src.split('\n');
+  const lineOff = [];
+  let acc = 0;
+  for (const l of lines) { lineOff.push(acc); acc += l.length + 1; }
+  const norm = (s) => s.replace(/[`*_~]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const out = [];
+  let si = 0;
+  for (const h of snapshot) {
+    const re = new RegExp('^ {0,3}' + '#'.repeat(Math.min(h.level, 6)) + '(\\s|$)');
+    const t = norm(h.text);
+    let found = -1;
+    for (let i = si; i < lines.length; i++) {
+      if (re.test(lines[i]) && norm(lines[i]).includes(t)) { found = i; break; }
+    }
+    if (found < 0) {
+      for (let i = si; i < lines.length; i++) {
+        if (re.test(lines[i])) { found = i; break; }
+      }
+    }
+    out.push(found >= 0 ? lineOff[found] : null);
+    if (found >= 0) si = found + 1;
+  }
+  return out;
 }
 function updateStats(src) {
   if (!state.path) { docStats.textContent = ''; return; }
@@ -360,6 +387,7 @@ function renderDocument() {
   decorateCode(content);
   fixImages(content);
   renderOutline(snapshot);
+  state.headOffsets = computeSourceOffsets(src, snapshot);
   state.headEls = $$('h1,h2,h3,h4,h5,h6', content);
   updateStats(src);
   if (findbar.hidden === false && findInput.value) scheduleFind();
@@ -420,6 +448,39 @@ scrollArea.addEventListener('scroll', () => {
   });
 });
 
+/* 编辑器滚动到源码偏移处：镜像元素测量（考虑 textarea 软换行） */
+let editorMirror = null;
+function editorScrollToOffset(offset) {
+  if (offset == null) return;
+  if (!editorMirror) {
+    editorMirror = document.createElement('div');
+    document.body.appendChild(editorMirror);
+  }
+  const cs = getComputedStyle(editor);
+  const s = editorMirror.style;
+  s.position = 'absolute';
+  s.visibility = 'hidden';
+  s.left = '-99999px';
+  s.top = '0';
+  s.boxSizing = 'border-box';
+  s.width = (editor.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) + 'px';
+  s.fontFamily = cs.fontFamily;
+  s.fontSize = cs.fontSize;
+  s.fontWeight = cs.fontWeight;
+  s.lineHeight = cs.lineHeight;
+  s.letterSpacing = cs.letterSpacing;
+  s.tabSize = cs.tabSize;
+  s.whiteSpace = 'pre-wrap';
+  s.overflowWrap = 'break-word';
+  s.padding = '0';
+  s.border = '0';
+  editorMirror.textContent = editor.value.slice(0, offset);
+  const y = parseFloat(cs.paddingTop) + editorMirror.offsetHeight;
+  suppressEditorSync = true;  // 大纲已精确定位预览，不要让比例同步再拉走它
+  editor.scrollTop = Math.max(0, y - 30);
+  setTimeout(() => { suppressEditorSync = false; }, 150);
+}
+
 olTree.addEventListener('click', (e) => {
   const item = e.target.closest('.ol-item');
   if (!item) return;
@@ -428,6 +489,9 @@ olTree.addEventListener('click', (e) => {
   let p = el.parentElement;
   while (p && p !== content) { if (p.classList?.contains('sec')) p.classList.remove('folded'); p = p.parentElement; }
   el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (state.mode === 'edit') {
+    editorScrollToOffset(state.headOffsets?.[+item.dataset.i]);
+  }
 });
 
 function setAllFolded(fold) {
@@ -567,6 +631,7 @@ function setMode(mode) {
 }
 
 let lastSyncRatio = 0;
+let suppressEditorSync = false;  // 大纲跳转时临时抑制编辑器→预览的比例同步
 editor.addEventListener('input', debounce(() => {
   if (editor.value === state.md) return;  // IME 等造成的假 input
   state.dirty = true;
@@ -574,7 +639,7 @@ editor.addEventListener('input', debounce(() => {
   rerender(true);
 }, 220));
 editor.addEventListener('scroll', () => {
-  if (state.mode !== 'edit') return;
+  if (state.mode !== 'edit' || suppressEditorSync) return;
   const max = editor.scrollHeight - editor.clientHeight;
   if (max <= 4) return;
   const r = editor.scrollTop / max;
