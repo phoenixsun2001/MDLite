@@ -1,0 +1,11 @@
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# 构建产物
+dist/
+
+# 本地工具状态
+.mimosa/
+.npk/
+*.log

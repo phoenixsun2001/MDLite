@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "MDLite 主窗口默认能力：核心 API（事件、窗口、webview）",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:window:allow-set-title"]
+}

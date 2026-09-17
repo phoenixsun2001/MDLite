@@ -1,0 +1,6 @@
+# 项目级镜像配置：覆盖全局 ~/.cargo/config.toml 中被防火墙拦截的 tuna 镜像
+[source.crates-io]
+replace-with = "rsproxy"
+
+[source.rsproxy]
+registry = "sparse+https://rsproxy.cn/index/"
