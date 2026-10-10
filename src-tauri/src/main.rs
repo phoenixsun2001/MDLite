@@ -83,6 +83,22 @@ fn save_export(default_name: String, content: String) -> Option<String> {
     Some(target.to_string_lossy().into_owned())
 }
 
+/// 另存为：弹出系统保存对话框，写入新路径并返回 (新路径, mtime)；用户取消返回 null
+#[tauri::command]
+fn save_as(default_name: String, text: String) -> Option<(String, u64)> {
+    let target = rfd::FileDialog::new()
+        .set_title("另存为")
+        .set_file_name(&default_name)
+        .add_filter("Markdown 文件", &["md", "markdown"])
+        .add_filter("所有文件", &["*"])
+        .save_file()?;
+    fs::write(&target, &text).ok()?;
+    let mtime = mtime_secs(&target);
+    let s = target.to_string_lossy();
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
+    Some((s, mtime))
+}
+
 /// 把 href 安全地拼到 base 目录下：只接受相对路径，逐段消解 `..`
 fn sanitize_join(base: &Path, href: &str) -> Option<PathBuf> {
     let href = href.split(['#', '?']).next()?.trim();
@@ -240,6 +256,7 @@ fn main() {
             write_file,
             dialog_open_file,
             save_export,
+            save_as,
             resolve_link,
             watch_file,
             stop_watch,

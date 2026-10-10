@@ -566,6 +566,7 @@ async function openPath(path, { pushNav = false } = {}) {
     state.dirty = false;
     editor.value = f.text;
     welcome.hidden = true;
+    histReset(f.text);
     renderDocument();
     scrollArea.scrollTop = 0;
     invoke('watch_file', { path, mtime: f.mtime }).catch(() => {});
@@ -577,12 +578,13 @@ async function openPath(path, { pushNav = false } = {}) {
 }
 
 async function saveDoc() {
-  if (!state.path) { toast('没有可保存的文件'); return; }
+  if (!state.path) return saveAsDoc();   // 从未落盘的内容 → 直接走另存为
   try {
     await invoke('write_file', { path: state.path, text: editor.value });
     state.md = editor.value;
     state.dirty = false;
     state.mtime = Math.floor(Date.now() / 1000);
+    invoke('watch_file', { path: state.path, mtime: state.mtime }).catch(() => {});  // 重置监听基线，避免自己的保存触发重载
     updateTitle();
     updateStats(state.md);
     toast('已保存', 'ok', 1400);
@@ -591,25 +593,45 @@ async function saveDoc() {
   }
 }
 
+async function saveAsDoc() {
+  const text = editor.value;
+  if (!text.trim()) { toast('内容为空，无需保存'); return; }
+  const name = state.path ? basename(state.path) : '未命名.md';
+  try {
+    const res = await invoke('save_as', { defaultName: name, text });
+    if (!res) return;   // 用户取消对话框
+    const [path, mtime] = res;
+    state.path = path;
+    state.mtime = mtime;
+    state.md = text;
+    state.dirty = false;
+    welcome.hidden = true;
+    invoke('watch_file', { path, mtime }).catch(() => {});
+    addRecent(path);
+    updateTitle();
+    updateStats(text);
+    toast('已保存：' + basename(path), 'ok', 2400);
+  } catch (err) {
+    toast('另存失败：' + err, 'error');
+  }
+}
+
 async function onFileChanged(ev) {
   const p = ev.payload;
   if (p !== state.path) return;
-  if (state.mode === 'edit' && state.dirty) {
+  if (state.dirty) {
     toast('文件已在磁盘上被修改；Ctrl+S 保存将覆盖外部更改');
     return;
   }
   try {
     const f = await invoke('read_file', { path: state.path });
+    if (!state.dirty && f.text === state.md) return;   // 内容没变（如自己刚保存），无需重载
     state.mtime = f.mtime;
-    if (state.mode === 'edit') {
-      editor.value = f.text;
-      state.md = f.text;
-      state.dirty = false;
-      updateTitle();
-    } else {
-      state.md = f.text;
-      rerender(true);
-    }
+    state.md = f.text;
+    editor.value = f.text;   // 编辑器同步磁盘内容，避免切回编辑模式显示旧文本
+    histReset(f.text);
+    if (state.mode === 'edit') updateTitle();
+    else rerender(true);
     toast('文件已更新，已重新加载', 'ok', 1600);
   } catch { /* 文件可能被暂时锁定，等下次变更 */ }
 }
@@ -630,14 +652,75 @@ function setMode(mode) {
   if (mode === 'edit') editor.focus();
 }
 
+/* ---------- 撤销 / 重做 ----------
+   自维护历史栈：程序化赋值 .value 会清空 textarea 原生撤销栈，
+   且工具栏插入、文件重载都走程序化路径，必须自己管理。 */
+const hist = { stack: [{ v: '', s: 0, e: 0 }], idx: 0, lastPush: 0, open: false, lock: false };
+
+function histPush(force) {
+  if (hist.lock) return;
+  const v = editor.value, s = editor.selectionStart, e = editor.selectionEnd;
+  const cur = hist.stack[hist.idx];
+  if (cur && cur.v === v) { cur.s = s; cur.e = e; return; }
+  const now = Date.now();
+  if (!force && hist.open && cur && now - hist.lastPush < 700) {
+    hist.stack[hist.idx] = { v, s, e };   // 连续输入合并为一步
+  } else {
+    hist.stack.length = hist.idx + 1;     // 新分支，丢弃被放弃的重做栈
+    hist.stack.push({ v, s, e });
+    if (hist.stack.length > 300) hist.stack.shift();
+    hist.idx = hist.stack.length - 1;
+  }
+  hist.open = !force;                     // 工具栏插入等强制入栈后关闭合并窗口
+  hist.lastPush = now;
+  updateUndoRedoButtons();
+}
+
+function histReset(v) {
+  hist.stack = [{ v, s: 0, e: 0 }];
+  hist.idx = 0;
+  hist.open = false;
+  updateUndoRedoButtons();
+}
+
+function histApply(entry) {
+  if (editor.value === entry.v) { editor.setSelectionRange(entry.s, entry.e); return; }
+  hist.lock = true;
+  editor.value = entry.v;
+  editor.setSelectionRange(entry.s, entry.e);
+  hist.lock = false;
+  hist.open = false;
+  state.dirty = editor.value !== state.md;
+  updateTitle();
+  rerender(true);
+}
+
+function undo() {
+  if (hist.idx > 0) { hist.idx--; histApply(hist.stack[hist.idx]); updateUndoRedoButtons(); }
+}
+
+function redo() {
+  if (hist.idx < hist.stack.length - 1) { hist.idx++; histApply(hist.stack[hist.idx]); updateUndoRedoButtons(); }
+}
+
+function updateUndoRedoButtons() {
+  const u = $('#tb-undo'), r = $('#tb-redo');
+  if (u) u.toggleAttribute('disabled', hist.idx <= 0);
+  if (r) r.toggleAttribute('disabled', hist.idx >= hist.stack.length - 1);
+}
+
 let lastSyncRatio = 0;
 let suppressEditorSync = false;  // 大纲跳转时临时抑制编辑器→预览的比例同步
-editor.addEventListener('input', debounce(() => {
+const scheduleDirty = debounce(() => {
   if (editor.value === state.md) return;  // IME 等造成的假 input
   state.dirty = true;
   updateTitle();
   rerender(true);
-}, 220));
+}, 220);
+editor.addEventListener('input', (ev) => {
+  histPush(ev.inputType === 'insertFromPaste' || ev.inputType === 'deleteByCut');  // 粘贴/剪切独立成一步
+  scheduleDirty();
+});
 editor.addEventListener('scroll', () => {
   if (state.mode !== 'edit' || suppressEditorSync) return;
   const max = editor.scrollHeight - editor.clientHeight;
@@ -672,14 +755,23 @@ const MD_SNIPPETS = {
   hr: () => ['\n\n---\n\n', ''],
 };
 $('#edit-toolbar').addEventListener('click', (e) => {
+  const act = e.target.closest('button[data-act2]')?.dataset.act2;
+  if (act) {
+    if (act === 'undo') undo();
+    else if (act === 'redo') redo();
+    else if (act === 'save') saveDoc();
+    else if (act === 'saveas') saveAsDoc();
+    return;
+  }
   const btn = e.target.closest('button[data-md]');
   if (!btn) return;
   const fn = MD_SNIPPETS[btn.dataset.md];
   if (!fn) return;
   const [pre, mid, post] = fn(editor.value.slice(editor.selectionStart, editor.selectionEnd));
-  editor.setRangeText(pre + mid + post, editor.selectionStart, editor.selectionEnd, pre.length ? 'end' : 'end');
+  editor.setRangeText(pre + mid + post, editor.selectionStart, editor.selectionEnd, 'end');
   editor.focus();
-  editor.dispatchEvent(new Event('input'));
+  histPush(true);
+  if (editor.value !== state.md) { state.dirty = true; updateTitle(); rerender(true); }
 });
 
 /* ================= 查找 ================= */
@@ -829,7 +921,9 @@ const HELP_HTML = `
 <h3>文件</h3>
 <table>
   <tr><td>打开文件</td><td><kbd>Ctrl</kbd> <kbd>O</kbd></td></tr>
-  <tr><td>保存（编辑模式）</td><td><kbd>Ctrl</kbd> <kbd>S</kbd></td></tr>
+  <tr><td>保存</td><td><kbd>Ctrl</kbd> <kbd>S</kbd></td></tr>
+  <tr><td>另存为…</td><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>S</kbd></td></tr>
+  <tr><td>撤销 / 重做</td><td><kbd>Ctrl</kbd> <kbd>Z</kbd> / <kbd>Ctrl</kbd> <kbd>Y</kbd></td></tr>
   <tr><td>返回上一文档</td><td><kbd>Alt</kbd> <kbd>←</kbd></td></tr>
 </table>
 <h3>视图</h3>
@@ -852,7 +946,7 @@ const HELP_HTML = `
 `;
 
 const ABOUT_HTML = `
-<h2>MDLite <span class="muted">v1.0</span></h2>
+<h2>MDLite <span class="muted">v1.1</span></h2>
 <p>轻、快、离线的 Markdown 阅读器。</p>
 <p class="muted">基于 MDLook 的功能与交互思路的轻量重制：<br>
 · Tauri 2 + 系统自带 WebView（Windows: WebView2 / macOS: WKWebView），非 Electron<br>
@@ -884,6 +978,8 @@ menuEl.addEventListener('click', (e) => {
   closeMenu();
   switch (item.dataset.act) {
     case 'open': openDialog(); break;
+    case 'save': saveDoc(); break;
+    case 'save-as': saveAsDoc(); break;
     case 'fold-all': setAllFolded(true); break;
     case 'expand-all': setAllFolded(false); break;
     case 'export': exportHtml(); break;
@@ -991,7 +1087,22 @@ document.addEventListener('keydown', (e) => {
   }
   switch (e.key.toLowerCase()) {
     case 'o': e.preventDefault(); openDialog(); break;
-    case 's': e.preventDefault(); if (state.mode === 'edit') saveDoc(); break;
+    case 's':
+      e.preventDefault();
+      e.shiftKey ? saveAsDoc() : saveDoc();
+      break;
+    case 'z':
+      if (state.mode === 'edit' && modal.hidden && !e.target.closest('#findbar')) {
+        e.preventDefault();
+        e.shiftKey ? redo() : undo();
+      }
+      break;
+    case 'y':
+      if (state.mode === 'edit' && modal.hidden && !e.target.closest('#findbar')) {
+        e.preventDefault();
+        redo();
+      }
+      break;
     case 'e': e.preventDefault(); setMode(state.mode === 'read' ? 'edit' : 'read'); break;
     case 'f': e.preventDefault(); openFind(); break;
     case 't':
@@ -1005,7 +1116,11 @@ document.addEventListener('keydown', (e) => {
       if (state.mode === 'edit') {
         editor.setRangeText('**' + (editor.value.slice(editor.selectionStart, editor.selectionEnd) || '粗体') + '**',
           editor.selectionStart, editor.selectionEnd, 'end');
-        editor.dispatchEvent(new Event('input'));
+        editor.focus();
+        histPush(true);
+        state.dirty = true;
+        updateTitle();
+        rerender(true);
       } else {
         state.settings.outline = !state.settings.outline;
         applyOutline();

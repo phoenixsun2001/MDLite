@@ -206,6 +206,8 @@ body.outline-open #outline { margin-left: 0; }
   font-family: var(--font-mono);
 }
 #edit-toolbar button:hover { background: var(--surface2); color: var(--text); }
+#edit-toolbar button:disabled { opacity: 0.35; cursor: default; }
+#edit-toolbar button:disabled:hover { background: transparent; color: var(--muted); }
 
 /* ============ 编辑器 ============ */
 
