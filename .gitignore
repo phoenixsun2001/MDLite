@@ -5,6 +5,9 @@ src-tauri/gen/
 # 构建产物
 dist/
 
+# 本地打包快照
+*.zip
+
 # 本地工具状态
 .mimosa/
 .npk/
