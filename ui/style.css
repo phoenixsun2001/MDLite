@@ -544,8 +544,10 @@ body.zen #content { --measure: 820px; }
 
 /* ============ 欢迎页 ============ */
 
-#welcome { display: grid; place-items: center; min-height: 92%; padding: 40px 20px; }
+#welcome { display: grid; place-items: center; min-height: 100%; padding: 40px 20px; }
 #welcome[hidden] { display: none; }
+/* 无文档时隐藏空 content，避免其 45vh 底部 padding 把欢迎卡推离中心并撑出滚动条 */
+body.no-doc #content { display: none; }
 .w-card { text-align: center; max-width: 480px; width: 100%; }
 .w-card h1 { font-size: 30px; margin: 14px 0 6px; letter-spacing: -0.01em; }
 .w-sub { color: var(--muted); font-size: 13.5px; }

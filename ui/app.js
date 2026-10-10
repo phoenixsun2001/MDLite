@@ -131,6 +131,12 @@ function applyOutline() {
   saveSettings();
 }
 
+/* 欢迎页显隐与 body.no-doc 同步：无文档时隐藏空 content 占位 */
+function showWelcome(show) {
+  welcome.hidden = !show;
+  bodyEl.classList.toggle('no-doc', show);
+}
+
 /* ================= 提示 ================= */
 
 function toast(msg, kind = '', ms = 2600) {
@@ -565,7 +571,7 @@ async function openPath(path, { pushNav = false } = {}) {
     state.md = f.text;
     state.dirty = false;
     editor.value = f.text;
-    welcome.hidden = true;
+    showWelcome(false);
     histReset(f.text);
     renderDocument();
     scrollArea.scrollTop = 0;
@@ -605,7 +611,7 @@ async function saveAsDoc() {
     state.mtime = mtime;
     state.md = text;
     state.dirty = false;
-    welcome.hidden = true;
+    showWelcome(false);
     invoke('watch_file', { path, mtime }).catch(() => {});
     addRecent(path);
     updateTitle();
@@ -1176,7 +1182,7 @@ async function boot() {
   if (startup) {
     await openPath(startup);
   } else {
-    welcome.hidden = false;
+    showWelcome(true);
   }
 }
 

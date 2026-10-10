@@ -1,6 +1,6 @@
 [package]
 name = "mdlite"
-version = "1.1.0"
+version = "1.1.1"
 description = "MDLite — 轻快、离线的 Markdown 阅读器"
 authors = ["MDLite"]
 edition = "2021"
