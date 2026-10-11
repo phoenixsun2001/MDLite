@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
-"""生成 MDLite 应用图标：icons/icon.ico、32x32.png、128x128.png、128x128@2x.png、icon.png、icon.icns"""
+"""生成 MDLite 应用图标：icons/icon.ico、32x32.png、128x128.png、128x128@2x.png、icon.png、icon.icns
+
+M 用矢量笔画绘制（不依赖系统字体），Windows / macOS / Linux 产物一致，
+且与右侧箭头保持固定间距，不会因回退字体变宽而重叠。
+"""
 import os
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.normpath(os.path.join(HERE, "..", "src-tauri", "icons"))
@@ -26,25 +30,19 @@ def base_canvas():
     return img, ImageDraw.Draw(img)
 
 
-def load_font(size):
-    for name in ("arialbd.ttf", "segoeuib.ttf", "seguisb.ttf", "calibrib.ttf"):
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
+WHITE = (255, 255, 255, 255)
 
 img, d = base_canvas()
-# 白色 "M" + 下箭头（Markdown 标志性符号）
-f = load_font(230)
-m_bbox = d.textbbox((0, 0), "M", font=f)
-mh = m_bbox[3] - m_bbox[1]
-d.text((120, S / 2 - mh / 2 - m_bbox[1] + 10), "M", font=f, fill=(255, 255, 255, 255))
+# 白色 "M"（矢量笔画，无字体依赖）+ 下箭头（Markdown 标志性符号）
+# M 外沿 x≈80..282，箭头三角最左 x≈301，留出清晰间距
+d.line(
+    [(107, 156), (107, 356), (181, 258), (255, 156), (255, 356)],
+    fill=WHITE, width=54, joint="curve",
+)
 # 箭头：竖线 + 三角
-ax = 375
-d.line([(ax, 145), (ax, 315)], fill=(255, 255, 255, 255), width=52)
-d.polygon([(ax - 78, 300), (ax + 78, 300), (ax, 400)], fill=(255, 255, 255, 255))
+ax = 365
+d.line([(ax, 148), (ax, 306)], fill=WHITE, width=50)
+d.polygon([(ax - 64, 292), (ax + 64, 292), (ax, 396)], fill=WHITE)
 
 img.save(os.path.join(OUT, "icon.png"))
 for size, name in ((32, "32x32.png"), (128, "128x128.png"), (256, "128x128@2x.png")):
