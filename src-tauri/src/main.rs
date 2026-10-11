@@ -11,7 +11,7 @@ use tauri::{Emitter, Manager};
 /// 递增代数以停掉旧的 mtime 轮询线程（每次 watch_file / stop_watch 都会 +1）
 static WATCH_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// 本次进程要打开的文档路径（命令行参数或二次启动传入）
+/// 本次进程要打开的文档路径（命令行参数、二次启动或 macOS 文件打开事件传入）
 struct StartupPath(Mutex<Option<String>>);
 
 #[derive(serde::Serialize)]
@@ -224,16 +224,18 @@ fn take_startup_file(state: tauri::State<'_, StartupPath>) -> Option<String> {
     state.0.lock().unwrap().take()
 }
 
-fn md_from_argv<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
+fn is_md_path(p: &Path) -> bool {
     const EXTS: [&str; 5] = ["md", "markdown", "mdown", "mkd", "txt"];
-    args.into_iter().skip(1).find(|a| {
-        let ext = Path::new(a)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        EXTS.contains(&ext.as_str()) && Path::new(a).is_file()
-    })
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    EXTS.contains(&ext.as_str()) && p.is_file()
+}
+
+fn md_from_argv<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
+    args.into_iter().skip(1).find(|a| is_md_path(Path::new(a)))
 }
 
 fn main() {
@@ -264,6 +266,25 @@ fn main() {
             reveal_in_folder,
             take_startup_file
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running MDLite");
+        .build(tauri::generate_context!())
+        .expect("error while building MDLite")
+        .run(|app, event| {
+            // macOS：Finder 双击关联文件时路径经 Apple Event（ODOC）送达，不在 argv 里，
+            // 冷启动时先落入 StartupPath 供前端 boot() 取走；已运行时经 open-path 事件转发
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = event {
+                if let Some(p) = urls
+                    .iter()
+                    .filter_map(|u| u.to_file_path().ok())
+                    .find(|p| is_md_path(p))
+                {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.unminimize();
+                        let _ = w.set_focus();
+                    }
+                    *app.state::<StartupPath>().0.lock().unwrap() = Some(p.display().to_string());
+                    let _ = app.emit("open-path", ());
+                }
+            }
+        });
 }

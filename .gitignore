@@ -12,3 +12,6 @@ dist/
 .mimosa/
 .npk/
 *.log
+
+# macOS
+.DS_Store
